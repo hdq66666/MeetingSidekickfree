@@ -43,7 +43,9 @@ The Aliyun backend requires:
 - Model ID
 
 New Aliyun Bailian users can register and create an API key here:
-[.../cn-beijing?userCode=crft2gd6&tab=model#/api-key](https://bailian.console.aliyun.com/cn-beijing?userCode=crft2gd6&tab=model#/api-key)
+[https://bailian.console.aliyun.com/cn-beijing](https://bailian.console.aliyun.com/cn-beijing?userCode=crft2gd6&tab=model#/api-key)
+
+New users can use `fun-asr-realtime` free for 10 hours.
 
 The default model ID is:
 
