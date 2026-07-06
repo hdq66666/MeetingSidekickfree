@@ -47,7 +47,7 @@ final class OpenAIClient {
             topP: 0.9,
             maxTokens: maxTokens,
             stream: false,
-            chatTemplateKwargs: ChatTemplateKwargs(enableThinking: false)
+            chatTemplateKwargs: Self.shouldDisableQwenThinking(for: model) ? ChatTemplateKwargs(enableThinking: false) : nil
         )
 
         var request = URLRequest(url: endpoint, timeoutInterval: timeout)
@@ -71,6 +71,10 @@ final class OpenAIClient {
         let latency = Int(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
 
         return LLMResult(text: cleaned, latencyMS: latency)
+    }
+
+    private static func shouldDisableQwenThinking(for model: String) -> Bool {
+        model.range(of: "qwen", options: [.caseInsensitive, .diacriticInsensitive]) != nil
     }
 }
 

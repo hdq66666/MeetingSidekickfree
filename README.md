@@ -1,5 +1,7 @@
 # MeetingSidekickfree v1.0.1
 
+![MeetingSidekickfree live transcript and live answers interface](docs/showcase.jpg)
+
 MeetingSidekickfree is a macOS ARM64 realtime meeting sidekick for listening to microphone and system audio, sending speech to streaming ASR, and using an OpenAI-compatible LLM endpoint to produce short live answers or directly useful context.
 
 ## Supported Platform
@@ -22,10 +24,6 @@ Required permissions:
 - Concurrent low-latency answer lanes
 - API log panel and transcript export/autosave
 
-## Showcase
-
-![MeetingSidekickfree live transcript and live answers interface](docs/showcase.jpg)
-
 ## Configuration
 
 App settings are saved in macOS UserDefaults under the app bundle identifier:
@@ -33,8 +31,6 @@ App settings are saved in macOS UserDefaults under the app bundle identifier:
 ```bash
 defaults read local.meetingsidekickfree.client MeetingSidekickfree.AppConfig.v1
 ```
-
-API keys are entered in the app GUI. Do not commit exported preferences or screenshots containing keys.
 
 ## ASR Backends
 
@@ -85,7 +81,7 @@ Expected protocol:
 
 ## vLLM / OpenAI-Compatible Backend
 
-The LLM backend uses an OpenAI-compatible `/chat/completions` endpoint. Requests are short, non-streaming completions. For Qwen-style templates, the app sends:
+The LLM backend uses an OpenAI-compatible `/chat/completions` endpoint. Requests are short, non-streaming completions. When the configured model name contains `qwen`, the app sends:
 
 ```json
 {
@@ -94,6 +90,8 @@ The LLM backend uses an OpenAI-compatible `/chat/completions` endpoint. Requests
   }
 }
 ```
+
+For other model names, `chat_template_kwargs` is omitted to stay compatible with non-Qwen OpenAI-compatible servers. If the model field is blank, it is also omitted.
 
 ## Build
 
@@ -130,7 +128,3 @@ The package script:
 `Scripts/package-app.sh` contains fixed local keychain/P12 passwords for generated local signing assets. These values are not cloud credentials, API keys, or user account passwords. They only protect the temporary local signing material generated under `.codesign/`, which is ignored by git.
 
 If macOS already has an older ad-hoc build in Screen Recording permissions, remove it, launch the newly packaged app once, grant permission, then restart the app.
-
-## Repository Hygiene
-
-The repository should not contain API keys, exported UserDefaults, `.codesign/`, `Build/`, or `.build/` artifacts. These paths are ignored by `.gitignore`.
