@@ -1,4 +1,4 @@
-# MeetingSidekickfree v1.0.1
+# MeetingSidekickfree v1.0.2
 
 ![MeetingSidekickfree live transcript and live answers interface](docs/showcase.jpg)
 
