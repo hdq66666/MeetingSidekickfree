@@ -22,6 +22,10 @@ Required permissions:
 - Concurrent low-latency answer lanes
 - API log panel and transcript export/autosave
 
+## Showcase
+
+![MeetingSidekickfree live transcript and live answers interface](docs/showcase.jpg)
+
 ## Configuration
 
 App settings are saved in macOS UserDefaults under the app bundle identifier:
