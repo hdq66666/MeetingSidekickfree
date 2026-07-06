@@ -109,22 +109,20 @@ swift build --disable-sandbox -c release
 
 ## Package App
 
-Create a local `.app` bundle:
+Create a local `.app` bundle and distributable `.dmg`:
 
 ```bash
 ./Scripts/package-app.sh
-open Build/MeetingSidekickfree-<git-sha>.app
+open Build/MeetingSidekickfree-<git-sha>-macos-arm64.dmg
 ```
 
 The package script:
 
 - Builds the release binary
 - Creates `Build/MeetingSidekickfree-<git-sha>.app`
+- Creates `Build/MeetingSidekickfree-<git-sha>-macos-arm64.dmg`
 - Copies `Resources/Info.plist`
 - Sets the bundle display name to include the git short SHA
-- Creates local signing assets under `.codesign/`
-- Signs the app with a local code-signing identity
-
-`Scripts/package-app.sh` contains fixed local keychain/P12 passwords for generated local signing assets. These values are not cloud credentials, API keys, or user account passwords. They only protect the temporary local signing material generated under `.codesign/`, which is ignored by git.
+- Signs the app with ad-hoc code signing
 
 If macOS already has an older ad-hoc build in Screen Recording permissions, remove it, launch the newly packaged app once, grant permission, then restart the app.
