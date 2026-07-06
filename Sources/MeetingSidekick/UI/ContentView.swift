@@ -556,7 +556,7 @@ private struct TranscriptHeader: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("实时字幕")
+                Text("Live Transcript")
                     .font(.title3.weight(.semibold))
                 Text("\(store.transcript.count) segments")
                     .font(.caption)
@@ -624,7 +624,7 @@ private struct AnswerTurnsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Header(title: "实时回答", subtitle: "A/B/C 并发，D 裁决")
+            Header(title: "Live Answers", subtitle: "\(store.answerTurns.count) turns")
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
@@ -684,13 +684,13 @@ private struct AnswerTurnCard: View {
     private func displayTitle(for lane: AnswerLane) -> String {
         switch lane {
         case .current:
-            return "当前片段"
+            return "Current Segment"
         case .history500:
-            return "\(turn.historyCharacterLimit)字历史"
+            return "\(turn.historyCharacterLimit) chars history"
         case .answerMemory:
-            return "\(turn.answerHistoryLimit)轮回答"
+            return "\(turn.answerHistoryLimit) answer turns"
         case .fusion:
-            return "裁决输出"
+            return "Decision Output"
         }
     }
 }

@@ -1,4 +1,4 @@
-# MeetingSidekickfree v1.0.0
+# MeetingSidekickfree v1.0.1
 
 MeetingSidekickfree is a macOS ARM64 realtime meeting sidekick for listening to microphone and system audio, sending speech to streaming ASR, and using an OpenAI-compatible LLM endpoint to produce short live answers or directly useful context.
 

@@ -38,19 +38,19 @@ enum AnswerLane: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .current: "当前片段"
-        case .history500: "500字历史"
-        case .answerMemory: "10轮回答"
-        case .fusion: "裁决输出"
+        case .current: "Current Segment"
+        case .history500: "500 chars history"
+        case .answerMemory: "10 answer turns"
+        case .fusion: "Decision Output"
         }
     }
 
     var subtitle: String {
         switch self {
-        case .current: "最低延迟"
-        case .history500: "上下文补全"
-        case .answerMemory: "避免重复"
-        case .fusion: "最终显示"
+        case .current: "Lowest latency"
+        case .history500: "Context fill"
+        case .answerMemory: "Avoid repetition"
+        case .fusion: "Final display"
         }
     }
 }
