@@ -1,0 +1,8 @@
+.build/
+Build/
+.DS_Store
+*.xcuserdata/
+*.xcworkspace/
+DerivedData/
+.codesign/
+.vscode/
