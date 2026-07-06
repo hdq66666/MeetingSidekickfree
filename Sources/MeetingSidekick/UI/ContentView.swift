@@ -145,7 +145,7 @@ private struct ControlSidebar: View {
                     }
                     TextField("ASR Language", text: $model.config.asrLanguage)
                         .textFieldStyle(.roundedBorder)
-                    TextField("ASR Hotwords", text: $model.config.asrHotwords)
+                    TextField("ASR Hotwords (space separated)", text: asrHotwords)
                         .textFieldStyle(.roundedBorder)
                     TextField("LLM Base URL", text: $model.config.llmBaseURL)
                         .textFieldStyle(.roundedBorder)
@@ -263,6 +263,13 @@ private struct ControlSidebar: View {
                     model.config.aliyunWorkspaceID = "llm-\(cleaned)"
                 }
             }
+        )
+    }
+
+    private var asrHotwords: Binding<String> {
+        Binding(
+            get: { model.config.asrHotwords },
+            set: { model.config.asrHotwords = ASRHotwordFormatter.normalizedInput($0) }
         )
     }
 

@@ -1,4 +1,4 @@
-# MeetingSidekickfree v1.0.2
+# MeetingSidekickfree v1.0.3
 
 ![MeetingSidekickfree live transcript and live answers interface](docs/showcase.jpg)
 
@@ -42,6 +42,9 @@ The Aliyun backend requires:
 - API key
 - Model ID
 
+New Aliyun Bailian users can register and create an API key here:
+[.../cn-beijing?userCode=crft2gd6&tab=model#/api-key](https://bailian.console.aliyun.com/cn-beijing?userCode=crft2gd6&tab=model#/api-key)
+
 The default model ID is:
 
 ```text
@@ -59,6 +62,8 @@ The WebSocket request sends:
 ```text
 Authorization: Bearer <api_key>
 ```
+
+`ASR Hotwords` accepts space-separated Chinese or English words. Other characters are removed by the UI. For Aliyun Cloud, the app creates a temporary hotword vocabulary with default `weight: 4`, waits until it is ready, and passes its `vocabulary_id` in the realtime `run-task` parameters. The temporary vocabulary is deleted when the ASR connection closes.
 
 ### Local FunASR
 
@@ -78,6 +83,8 @@ Expected protocol:
 - Server returns locked `sentences[]` and replaceable `partial`
 
 `Debounce` only affects local FunASR partial handling and is shown only when `Local FunASR` is selected.
+
+For Local FunASR, `ASR Hotwords` is normalized the same way and sent as one space-separated `HOTWORDS:<value>` control message.
 
 ## vLLM / OpenAI-Compatible Backend
 

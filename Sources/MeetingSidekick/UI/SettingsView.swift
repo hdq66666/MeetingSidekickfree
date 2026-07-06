@@ -32,7 +32,7 @@ struct SettingsView: View {
                     TextField("WebSocket URL", text: $model.config.asrWebSocketURL)
                 }
                 TextField("Language", text: $model.config.asrLanguage)
-                TextField("Hotwords", text: $model.config.asrHotwords)
+                TextField("Hotwords (space separated)", text: asrHotwords)
                 Picker("Audio Source", selection: $model.config.audioSource) {
                     ForEach(AudioSource.allCases) { source in
                         Text(source.title).tag(source)
@@ -91,6 +91,13 @@ struct SettingsView: View {
                     model.config.aliyunWorkspaceID = "llm-\(cleaned)"
                 }
             }
+        )
+    }
+
+    private var asrHotwords: Binding<String> {
+        Binding(
+            get: { model.config.asrHotwords },
+            set: { model.config.asrHotwords = ASRHotwordFormatter.normalizedInput($0) }
         )
     }
 

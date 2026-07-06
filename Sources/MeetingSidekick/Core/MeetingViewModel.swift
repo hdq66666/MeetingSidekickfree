@@ -42,6 +42,7 @@ final class MeetingViewModel: ObservableObject {
     }
 
     func saveConfig() {
+        config.asrHotwords = ASRHotwordFormatter.normalizedInput(config.asrHotwords)
         microphoneEnhancementGate.setEnabled(config.enableMicrophoneVoiceEnhancement)
         updateLogOutputGate()
         updateTranscriptAutosaveTask()
@@ -51,6 +52,7 @@ final class MeetingViewModel: ObservableObject {
 
     func start() {
         guard !isRunning else { return }
+        config.asrHotwords = ASRHotwordFormatter.normalizedInput(config.asrHotwords)
         config.save()
         updateLogOutputGate()
         microphoneMuteGate.setMuted(isMicrophoneMuted)

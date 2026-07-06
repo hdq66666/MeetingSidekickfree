@@ -6,6 +6,9 @@ enum ASRClientError: Error, LocalizedError {
     case missingAPIKey
     case disconnected
     case unrecognizedMessage
+    case invalidHotwordsEndpoint
+    case invalidHotwordsResponse
+    case hotwordsRequestFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +17,9 @@ enum ASRClientError: Error, LocalizedError {
         case .missingAPIKey: "Aliyun ASR API key is required."
         case .disconnected: "ASR WebSocket disconnected."
         case .unrecognizedMessage: "ASR WebSocket returned an unsupported message."
+        case .invalidHotwordsEndpoint: "Invalid Aliyun ASR hotwords endpoint."
+        case .invalidHotwordsResponse: "Aliyun ASR hotwords returned an unsupported response."
+        case let .hotwordsRequestFailed(message): "Aliyun ASR hotwords request failed: \(message)"
         }
     }
 }
@@ -45,6 +51,8 @@ final class ASRWebSocketClient {
     private var reportedConnectionFailure = false
     private var connectionID = UUID()
     private var refreshWorkItem: DispatchWorkItem?
+    private var aliyunVocabularyTask: Task<Void, Never>?
+    private var aliyunVocabularyID: String?
     private let sendQueue = DispatchQueue(label: "MeetingSidekickfree.ASRWebSocket.send")
     private let aliyunRefreshInterval: TimeInterval = 270
 
@@ -81,7 +89,7 @@ final class ASRWebSocketClient {
         if !cleanedLanguage.isEmpty {
             sendControl("LANGUAGE:\(cleanedLanguage)")
         }
-        let cleanedHotwords = settings.hotwords.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanedHotwords = ASRHotwordFormatter.normalizedInput(settings.hotwords)
         if !cleanedHotwords.isEmpty {
             sendControl("HOTWORDS:\(cleanedHotwords)")
         }
@@ -116,7 +124,7 @@ final class ASRWebSocketClient {
         let task = URLSession.shared.webSocketTask(with: request)
         self.task = task
         task.resume()
-        sendAliyunRunTask(settings: settings, taskID: taskID)
+        prepareAliyunHotwordsThenRunTask(settings: settings, taskID: taskID, connectionID: connectionID)
         receiveLoop(connectionID: connectionID)
     }
 
@@ -151,6 +159,9 @@ final class ASRWebSocketClient {
         reportedConnectionFailure = false
         refreshWorkItem?.cancel()
         refreshWorkItem = nil
+        aliyunVocabularyTask?.cancel()
+        aliyunVocabularyTask = nil
+        deleteAliyunVocabularyIfNeeded()
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         taskID = nil
@@ -192,11 +203,47 @@ final class ASRWebSocketClient {
         sendControl(text)
     }
 
-    private func sendAliyunRunTask(settings: ASRConnectionSettings, taskID: String) {
+    private func prepareAliyunHotwordsThenRunTask(settings: ASRConnectionSettings, taskID: String, connectionID: UUID) {
+        let entries = ASRHotwordFormatter.entries(from: settings.hotwords)
+        guard !entries.isEmpty else {
+            sendAliyunRunTask(settings: settings, taskID: taskID, vocabularyID: nil)
+            return
+        }
+
+        guard Self.modelSupportsAliyunHotwords(settings.aliyunModel) else {
+            log(.warning, logSource, "ignore hotwords: Aliyun hotwords require Fun-ASR or Paraformer model")
+            sendAliyunRunTask(settings: settings, taskID: taskID, vocabularyID: nil)
+            return
+        }
+
+        log(.info, logSource, "create aliyun hotwords vocabulary: \(entries.count) words, weight=4")
+        aliyunVocabularyTask?.cancel()
+        aliyunVocabularyTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let vocabularyID = try await self.createAliyunVocabulary(settings: settings, entries: entries)
+                guard connectionID == self.connectionID, self.taskID == taskID, !Task.isCancelled else {
+                    try? await Self.deleteAliyunVocabulary(settings: settings, vocabularyID: vocabularyID)
+                    return
+                }
+                self.aliyunVocabularyID = vocabularyID
+                self.log(.info, self.logSource, "aliyun hotwords vocabulary ready: \(vocabularyID)")
+                self.sendAliyunRunTask(settings: settings, taskID: taskID, vocabularyID: vocabularyID)
+            } catch {
+                self.handleConnectionFailure(error, context: "prepare aliyun hotwords failed", connectionID: connectionID)
+            }
+        }
+    }
+
+    private func sendAliyunRunTask(settings: ASRConnectionSettings, taskID: String, vocabularyID: String?) {
         var parameters: [String: Any] = [
             "format": "pcm",
             "sample_rate": 16_000
         ]
+
+        if let vocabularyID, !vocabularyID.isEmpty {
+            parameters["vocabulary_id"] = vocabularyID
+        }
 
         let cleanedLanguage = settings.language.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleanedLanguage.isEmpty {
@@ -218,6 +265,125 @@ final class ASRWebSocketClient {
                 "input": [:]
             ]
         ])
+    }
+
+    private func createAliyunVocabulary(settings: ASRConnectionSettings, entries: [ASRHotwordEntry]) async throws -> String {
+        let response = try await Self.sendAliyunVocabularyRequest(
+            settings: settings,
+            input: [
+                "action": "create_vocabulary",
+                "target_model": settings.aliyunModel,
+                "prefix": "msfree",
+                "vocabulary": entries.map(\.aliyunPayload)
+            ]
+        )
+        guard let output = response["output"] as? [String: Any],
+              let vocabularyID = output["vocabulary_id"] as? String,
+              !vocabularyID.isEmpty else {
+            throw ASRClientError.invalidHotwordsResponse
+        }
+
+        try await waitUntilAliyunVocabularyReady(settings: settings, vocabularyID: vocabularyID)
+        return vocabularyID
+    }
+
+    private func waitUntilAliyunVocabularyReady(settings: ASRConnectionSettings, vocabularyID: String) async throws {
+        for attempt in 0..<6 {
+            let response = try await Self.sendAliyunVocabularyRequest(
+                settings: settings,
+                input: [
+                    "action": "query_vocabulary",
+                    "vocabulary_id": vocabularyID
+                ]
+            )
+            guard let output = response["output"] as? [String: Any],
+                  let status = output["status"] as? String else {
+                throw ASRClientError.invalidHotwordsResponse
+            }
+
+            if status == "OK" {
+                return
+            }
+            if attempt == 5 {
+                throw ASRClientError.hotwordsRequestFailed("vocabulary status is \(status)")
+            }
+            try await Task.sleep(nanoseconds: 300_000_000)
+        }
+    }
+
+    private func deleteAliyunVocabularyIfNeeded() {
+        guard let vocabularyID = aliyunVocabularyID else { return }
+        aliyunVocabularyID = nil
+        guard let settings, settings.backend == .aliyunCloud else { return }
+        log(.info, logSource, "delete aliyun hotwords vocabulary: \(vocabularyID)")
+        Task.detached {
+            try? await Self.deleteAliyunVocabulary(settings: settings, vocabularyID: vocabularyID)
+        }
+    }
+
+    private static func deleteAliyunVocabulary(settings: ASRConnectionSettings, vocabularyID: String) async throws {
+        _ = try await sendAliyunVocabularyRequest(
+            settings: settings,
+            input: [
+                "action": "delete_vocabulary",
+                "vocabulary_id": vocabularyID
+            ]
+        )
+    }
+
+    private static func sendAliyunVocabularyRequest(settings: ASRConnectionSettings, input: [String: Any]) async throws -> [String: Any] {
+        guard let url = aliyunHotwordsURL(from: settings.aliyunEndpoint) else {
+            throw ASRClientError.invalidHotwordsEndpoint
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(settings.aliyunAPIKey.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "model": "speech-biasing",
+            "input": input
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<300).contains(httpResponse.statusCode) {
+            let body = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
+            throw ASRClientError.hotwordsRequestFailed(body)
+        }
+
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ASRClientError.invalidHotwordsResponse
+        }
+        if let code = object["code"] as? String, !code.isEmpty {
+            let message = object["message"] as? String ?? code
+            throw ASRClientError.hotwordsRequestFailed(message)
+        }
+        return object
+    }
+
+    private static func aliyunHotwordsURL(from websocketEndpoint: String) -> URL? {
+        var endpoint = websocketEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        if endpoint.hasPrefix("wss://") {
+            endpoint = "https://" + String(endpoint.dropFirst(6))
+        } else if endpoint.hasPrefix("ws://") {
+            endpoint = "http://" + String(endpoint.dropFirst(5))
+        }
+
+        if let range = endpoint.range(of: "/api-ws/v1/inference/") {
+            endpoint.replaceSubrange(range, with: "/api/v1/services/audio/asr/customization")
+        } else if let range = endpoint.range(of: "/api-ws/v1/inference") {
+            endpoint.replaceSubrange(range, with: "/api/v1/services/audio/asr/customization")
+        } else {
+            endpoint = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                + "/api/v1/services/audio/asr/customization"
+        }
+        return URL(string: endpoint)
+    }
+
+    private static func modelSupportsAliyunHotwords(_ model: String) -> Bool {
+        let normalized = model.lowercased()
+        return normalized.contains("fun-asr") || normalized.contains("paraformer")
     }
 
     private static func aliyunLanguageHint(from language: String) -> String {
