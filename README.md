@@ -82,9 +82,10 @@ Expected protocol:
 - Client optionally sends `HOTWORDS:<value>`
 - Client sends binary `pcm_s16le`, 16 kHz, mono audio frames
 - Client sends `STOP` when the session ends
-- Server returns locked `sentences[]` and replaceable `partial`
-
-`Debounce` only affects local FunASR partial handling and is shown only when `Local FunASR` is selected.
+- Server returns cumulative snapshots of locked `sentences[]`, not per-response deltas
+- Client upserts locked sentences by `(start, end, text)` and ignores unchanged snapshot entries
+- Server returns a replaceable `partial`; the client never promotes it to final on a timer
+- `is_final` becomes `true` only after `STOP` and ends the current session
 
 For Local FunASR, `ASR Hotwords` is normalized the same way and sent as one space-separated `HOTWORDS:<value>` control message.
 

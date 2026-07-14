@@ -170,9 +170,6 @@ private struct ControlSidebar: View {
                         Slider(value: historyCharacters, in: 100...10_000, step: 100)
                     }
                     Stepper("Answer memory \(model.config.maxAnswerHistory)", value: $model.config.maxAnswerHistory, in: 3...30)
-                    if model.config.asrBackend == .localFunASR {
-                        Stepper("Debounce \(model.config.triggerDebounceMS) ms", value: $model.config.triggerDebounceMS, in: 200...2000, step: 100)
-                    }
                 }
                 .font(.callout)
 

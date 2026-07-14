@@ -182,35 +182,8 @@ struct ASREvent: Equatable {
 
         events.append(contentsOf: parseAliyunEvents(from: dictionary))
 
-        if let sentences = dictionary["sentences"] as? [[String: Any]] {
-            for sentence in sentences {
-                let text = extractText(from: sentence)
-                guard !text.isEmpty else { continue }
-                events.append(
-                    ASREvent(
-                        text: text,
-                        stable: true,
-                        speaker: sentence["spk"] as? String ?? sentence["speaker"] as? String,
-                        startMS: intValue(sentence["start"]),
-                        endMS: intValue(sentence["end"])
-                    )
-                )
-            }
-        }
-
-        if let partial = dictionary["partial"] as? String {
-            let cleaned = partial.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !cleaned.isEmpty {
-                events.append(
-                    ASREvent(
-                        text: cleaned,
-                        stable: false,
-                        speaker: dictionary["spk"] as? String ?? dictionary["speaker"] as? String,
-                        startMS: intValue(dictionary["partial_start_ms"]),
-                        endMS: nil
-                    )
-                )
-            }
+        if let response = LocalFunASRResponse.parse(dictionary: dictionary) {
+            return events + response.events
         }
 
         let textKeys = ["text", "sentence", "transcript", "result", "content"]
@@ -240,7 +213,7 @@ struct ASREvent: Equatable {
         return events
     }
 
-    private static func extractText(from dictionary: [String: Any]) -> String {
+    fileprivate static func extractText(from dictionary: [String: Any]) -> String {
         let textKeys = ["text", "sentence", "transcript", "result", "content"]
         return textKeys
             .compactMap { dictionary[$0] as? String }
@@ -248,7 +221,7 @@ struct ASREvent: Equatable {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    private static func intValue(_ value: Any?) -> Int? {
+    fileprivate static func intValue(_ value: Any?) -> Int? {
         if let int = value as? Int {
             return int
         }
@@ -306,7 +279,7 @@ struct ASREvent: Equatable {
         )
     }
 
-    private static func boolValue(_ value: Any?) -> Bool? {
+    fileprivate static func boolValue(_ value: Any?) -> Bool? {
         if let bool = value as? Bool {
             return bool
         }
@@ -324,5 +297,92 @@ struct ASREvent: Equatable {
             }
         }
         return nil
+    }
+}
+
+struct LocalFunASRResponse: Equatable {
+    let lockedSentences: [ASREvent]
+    let partial: ASREvent?
+    let isFinal: Bool
+
+    var events: [ASREvent] {
+        guard let partial else { return lockedSentences }
+        return lockedSentences + [partial]
+    }
+
+    static func parse(jsonString: String) -> LocalFunASRResponse? {
+        guard let data = jsonString.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any] else {
+            return nil
+        }
+        return parse(dictionary: dictionary)
+    }
+
+    fileprivate static func parse(dictionary: [String: Any]) -> LocalFunASRResponse? {
+        guard dictionary["sentences"] != nil || dictionary["partial"] != nil else {
+            return nil
+        }
+
+        let isFinal = ASREvent.boolValue(dictionary["is_final"]) ?? false
+        let lockedSentences = (dictionary["sentences"] as? [[String: Any]] ?? []).compactMap { sentence -> ASREvent? in
+            let text = ASREvent.extractText(from: sentence)
+            guard !text.isEmpty else { return nil }
+            return ASREvent(
+                text: text,
+                stable: true,
+                speaker: sentence["spk"] as? String ?? sentence["speaker"] as? String,
+                startMS: ASREvent.intValue(sentence["start"]),
+                endMS: ASREvent.intValue(sentence["end"])
+            )
+        }
+
+        let partialText = (dictionary["partial"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let partial = partialText.isEmpty ? nil : ASREvent(
+            text: partialText,
+            stable: isFinal,
+            speaker: dictionary["spk"] as? String ?? dictionary["speaker"] as? String,
+            startMS: ASREvent.intValue(dictionary["partial_start_ms"]),
+            endMS: isFinal ? ASREvent.intValue(dictionary["duration_ms"]) : nil
+        )
+
+        return LocalFunASRResponse(
+            lockedSentences: lockedSentences,
+            partial: partial,
+            isFinal: isFinal
+        )
+    }
+}
+
+struct LocalFunASRSnapshotReconciler {
+    private struct SentenceIdentity: Hashable {
+        let startMS: Int?
+        let endMS: Int?
+        let text: String
+
+        init(_ event: ASREvent) {
+            startMS = event.startMS
+            endMS = event.endMS
+            text = event.text
+        }
+    }
+
+    private var emittedSentenceIdentities = Set<SentenceIdentity>()
+
+    mutating func events(for response: LocalFunASRResponse) -> [ASREvent] {
+        var events = response.lockedSentences.filter { sentence in
+            emittedSentenceIdentities.insert(SentenceIdentity(sentence)).inserted
+        }
+
+        if let partial = response.partial,
+           !partial.stable || emittedSentenceIdentities.insert(SentenceIdentity(partial)).inserted {
+            events.append(partial)
+        }
+        return events
+    }
+
+    mutating func reset() {
+        emittedSentenceIdentities.removeAll()
     }
 }

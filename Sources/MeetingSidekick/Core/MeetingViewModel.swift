@@ -22,13 +22,11 @@ final class MeetingViewModel: ObservableObject {
     private let microphoneLevelReporter: AudioLevelReporter
     private var asrClients: [ASRStreamRole: ASRWebSocketClient] = [:]
     private var audioCaptures: [AudioCapture] = []
-    private var debounceTasks: [String: Task<Void, Never>] = [:]
     private var answerTasks: [UUID: Task<Void, Never>] = [:]
     private var transcriptAutosaveTask: Task<Void, Never>?
     private var audioStartTask: Task<Void, Never>?
     private var audioStartID = UUID()
     private var lastAutosavedTranscriptID: UUID?
-    private var pendingPartialRevisions: [String: Int] = [:]
     private var lastStableFingerprint = ""
     private var seenStableFingerprints = Set<String>()
     private var answerHistory: [String] = []
@@ -119,11 +117,6 @@ final class MeetingViewModel: ObservableObject {
         audioStartTask = nil
         audioStartID = UUID()
         microphoneLevelReporter.reset()
-        for task in debounceTasks.values {
-            task.cancel()
-        }
-        debounceTasks.removeAll()
-        pendingPartialRevisions.removeAll()
         for task in answerTasks.values {
             task.cancel()
         }
@@ -518,26 +511,6 @@ final class MeetingViewModel: ObservableObject {
                 for: key
             )
             appendLog(.receive, source: source, message: "partial speaker=\(speaker ?? "none") chars=\(event.text.count) \(event.text)")
-            if config.asrBackend == .localFunASR {
-                scheduleDebouncedPartial(event)
-            }
-        }
-    }
-
-    private func scheduleDebouncedPartial(_ event: ASREvent) {
-        let key = partialKey(for: event)
-        let revision = (pendingPartialRevisions[key] ?? 0) + 1
-        pendingPartialRevisions[key] = revision
-        let delay = UInt64(max(config.triggerDebounceMS, 100)) * 1_000_000
-        debounceTasks[key]?.cancel()
-        debounceTasks[key] = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: delay)
-            await MainActor.run {
-                guard let self, revision == self.pendingPartialRevisions[key], !Task.isCancelled else { return }
-                self.transcriptStore.clearPartial(for: key)
-                self.debounceTasks[key] = nil
-                self.acceptStableSegment(event)
-            }
         }
     }
 
@@ -802,11 +775,6 @@ final class MeetingViewModel: ObservableObject {
 
     private func clearMicrophonePartials() {
         transcriptStore.clearPartials { $0.hasPrefix("mic|") }
-        for key in Array(debounceTasks.keys) where key.hasPrefix("mic|") {
-            debounceTasks[key]?.cancel()
-            debounceTasks[key] = nil
-            pendingPartialRevisions[key] = nil
-        }
     }
 
     private func textWithSpeaker(_ text: String, speaker: String?) -> String {

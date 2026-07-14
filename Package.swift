@@ -13,6 +13,10 @@ let package = Package(
         .executableTarget(
             name: "MeetingSidekickfree",
             path: "Sources/MeetingSidekick"
+        ),
+        .testTarget(
+            name: "MeetingSidekickTests",
+            dependencies: ["MeetingSidekickfree"]
         )
     ]
 )

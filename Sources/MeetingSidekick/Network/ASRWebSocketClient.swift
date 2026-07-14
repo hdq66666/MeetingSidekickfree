@@ -53,6 +53,7 @@ final class ASRWebSocketClient {
     private var refreshWorkItem: DispatchWorkItem?
     private var aliyunVocabularyTask: Task<Void, Never>?
     private var aliyunVocabularyID: String?
+    private var localSnapshotReconciler = LocalFunASRSnapshotReconciler()
     private let sendQueue = DispatchQueue(label: "MeetingSidekickfree.ASRWebSocket.send")
     private let aliyunRefreshInterval: TimeInterval = 270
 
@@ -167,6 +168,7 @@ final class ASRWebSocketClient {
         taskID = nil
         readyToSendAudio = false
         sentAudioFrameCount = 0
+        localSnapshotReconciler.reset()
         sendQueue.async { [weak self] in
             self?.pendingAudioFrames.removeAll()
         }
@@ -454,7 +456,15 @@ final class ASRWebSocketClient {
     }
 
     private func emitParsedEvents(jsonString: String) {
-        for var event in ASREvent.parseEvents(jsonString: jsonString) {
+        let events: [ASREvent]
+        if settings?.backend == .localFunASR,
+           let response = LocalFunASRResponse.parse(jsonString: jsonString) {
+            events = localSnapshotReconciler.events(for: response)
+        } else {
+            events = ASREvent.parseEvents(jsonString: jsonString)
+        }
+
+        for var event in events {
             event.streamName = settings?.streamName
             event.speaker = settings?.speakerName
             onEvent?(event)

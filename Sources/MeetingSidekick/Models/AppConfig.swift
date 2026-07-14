@@ -52,7 +52,6 @@ struct AppConfig: Codable, Equatable {
     var systemPrompt: String = AppConfig.defaultSystemPrompt
     var maxHistoryCharacters: Int = 500
     var maxAnswerHistory: Int = 10
-    var triggerDebounceMS: Int = 800
     var minSegmentCharacters: Int = 6
     var maxCompletionTokens: Int = 220
     var requestTimeoutSeconds: Double = 3.5
@@ -90,7 +89,6 @@ struct AppConfig: Codable, Equatable {
         systemPrompt = decodedSystemPrompt == AppConfig.legacyDefaultSystemPrompt ? AppConfig.defaultSystemPrompt : decodedSystemPrompt
         maxHistoryCharacters = try container.decodeIfPresent(Int.self, forKey: .maxHistoryCharacters) ?? 500
         maxAnswerHistory = try container.decodeIfPresent(Int.self, forKey: .maxAnswerHistory) ?? 10
-        triggerDebounceMS = try container.decodeIfPresent(Int.self, forKey: .triggerDebounceMS) ?? 800
         minSegmentCharacters = try container.decodeIfPresent(Int.self, forKey: .minSegmentCharacters) ?? 6
         maxCompletionTokens = try container.decodeIfPresent(Int.self, forKey: .maxCompletionTokens) ?? 220
         requestTimeoutSeconds = try container.decodeIfPresent(Double.self, forKey: .requestTimeoutSeconds) ?? 3.5
