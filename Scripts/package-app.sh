@@ -3,7 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 GIT_VERSION="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo nogit)"
-APP_NAME="MeetingSidekickfree-${GIT_VERSION}"
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT_DIR/Resources/Info.plist")"
+APP_NAME="MeetingSidekickfree-${VERSION}-${GIT_VERSION}"
 BUILD_DIR="$ROOT_DIR/Build"
 APP_DIR="$ROOT_DIR/Build/${APP_NAME}.app"
 DMG_STAGING_DIR="$ROOT_DIR/Build/${APP_NAME}-dmg"
@@ -29,8 +30,6 @@ cp "Resources/MeetingSidekick.entitlements" "$RESOURCES_DIR/MeetingSidekick.enti
 /usr/libexec/PlistBuddy -c "Set :CFBundleName MeetingSidekickfree" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName MeetingSidekickfree" "$CONTENTS_DIR/Info.plist" >/dev/null 2>&1 \
     || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string MeetingSidekickfree" "$CONTENTS_DIR/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GIT_VERSION" "$CONTENTS_DIR/Info.plist"
-
 chmod +x "$MACOS_DIR/MeetingSidekickfree"
 
 codesign \

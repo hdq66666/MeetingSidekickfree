@@ -1,6 +1,6 @@
 import Foundation
 
-struct ASRHotwordEntry: Equatable {
+struct ASRHotwordEntry: Hashable, Sendable {
     let text: String
     let languageCode: String?
 

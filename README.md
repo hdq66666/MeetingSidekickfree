@@ -65,7 +65,7 @@ The WebSocket request sends:
 Authorization: Bearer <api_key>
 ```
 
-`ASR Hotwords` accepts space-separated Chinese or English words. Other characters are removed by the UI. For Aliyun Cloud, the app creates a temporary hotword vocabulary with default `weight: 4`, waits until it is ready, and passes its `vocabulary_id` in the realtime `run-task` parameters. The temporary vocabulary is deleted when the ASR connection closes.
+`ASR Hotwords` accepts space-separated Chinese or English words. Other characters are removed by the UI. For Aliyun Cloud, the app creates one temporary vocabulary with default `weight: 4`, shares it between microphone and system streams, and reuses it across WebSocket refreshes. The vocabulary is deleted when the meeting session stops. If vocabulary preparation fails or the account quota is exhausted, realtime ASR continues without hotwords.
 
 ### Local FunASR
 
@@ -123,16 +123,16 @@ Create a local `.app` bundle and distributable `.dmg`:
 
 ```bash
 ./Scripts/package-app.sh
-open Build/MeetingSidekickfree-<git-sha>-macos-arm64.dmg
+open Build/MeetingSidekickfree-<version>-<git-sha>-macos-arm64.dmg
 ```
 
 The package script:
 
 - Builds the release binary
-- Creates `Build/MeetingSidekickfree-<git-sha>.app`
-- Creates `Build/MeetingSidekickfree-<git-sha>-macos-arm64.dmg`
+- Creates `Build/MeetingSidekickfree-<version>-<git-sha>.app`
+- Creates `Build/MeetingSidekickfree-<version>-<git-sha>-macos-arm64.dmg`
 - Copies `Resources/Info.plist`
-- Sets the bundle display name to include the git short SHA
+- Includes the version and git short SHA in artifact names
 - Signs the app with ad-hoc code signing
 
 If macOS already has an older ad-hoc build in Screen Recording permissions, remove it, launch the newly packaged app once, grant permission, then restart the app.

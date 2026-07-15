@@ -51,13 +51,26 @@ final class ASRWebSocketClient {
     private var reportedConnectionFailure = false
     private var connectionID = UUID()
     private var refreshWorkItem: DispatchWorkItem?
-    private var aliyunVocabularyTask: Task<Void, Never>?
-    private var aliyunVocabularyID: String?
+    private var reconnectWorkItem: DispatchWorkItem?
+    private var reconnectAttempt = 0
+    private var aliyunPreparationTask: Task<Void, Never>?
     private var localSnapshotReconciler = LocalFunASRSnapshotReconciler()
+    private let aliyunHotwordManager: AliyunHotwordVocabularyManager
     private let sendQueue = DispatchQueue(label: "MeetingSidekickfree.ASRWebSocket.send")
     private let aliyunRefreshInterval: TimeInterval = 270
+    private let maxAliyunReconnectAttempts = 4
+
+    init(aliyunHotwordManager: AliyunHotwordVocabularyManager = AliyunHotwordVocabularyManager()) {
+        self.aliyunHotwordManager = aliyunHotwordManager
+    }
 
     func connect(settings: ASRConnectionSettings) throws {
+        reconnectAttempt = 0
+        try replaceConnection(settings: settings)
+    }
+
+    private func replaceConnection(settings: ASRConnectionSettings) throws {
+        close()
         self.settings = settings
         isClosing = false
         reportedConnectionFailure = false
@@ -76,9 +89,6 @@ final class ASRWebSocketClient {
         }
 
         log(.info, logSource, "connect local \(settings.localURL)")
-        close()
-        isClosing = false
-        reportedConnectionFailure = false
         connectionID = UUID()
         let connectionID = connectionID
         let task = URLSession.shared.webSocketTask(with: url)
@@ -101,7 +111,7 @@ final class ASRWebSocketClient {
         guard !settings.aliyunEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ASRClientError.missingWorkspace
         }
-        guard let url = URL(string: settings.aliyunEndpoint) else {
+        guard URL(string: settings.aliyunEndpoint) != nil else {
             throw ASRClientError.invalidURL
         }
 
@@ -111,35 +121,23 @@ final class ASRWebSocketClient {
         }
 
         log(.info, logSource, "connect aliyun \(settings.aliyunEndpoint)")
-        close()
-        isClosing = false
-        reportedConnectionFailure = false
         connectionID = UUID()
         let connectionID = connectionID
         let taskID = UUID().uuidString
         self.taskID = taskID
         readyToSendAudio = false
-
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        let task = URLSession.shared.webSocketTask(with: request)
-        self.task = task
-        task.resume()
-        prepareAliyunHotwordsThenRunTask(settings: settings, taskID: taskID, connectionID: connectionID)
-        receiveLoop(connectionID: connectionID)
+        prepareAliyunHotwordsThenOpenConnection(
+            settings: settings,
+            taskID: taskID,
+            connectionID: connectionID
+        )
     }
 
     func sendPCM(_ data: Data) {
         sendQueue.async { [weak self] in
-            guard let self, let task = self.task else { return }
-            guard self.readyToSendAudio else {
-                self.pendingAudioFrames.append(data)
-                if self.pendingAudioFrames.count > 80 {
-                    self.pendingAudioFrames.removeFirst(self.pendingAudioFrames.count - 80)
-                }
-                if self.pendingAudioFrames.count == 1 || self.pendingAudioFrames.count % 20 == 0 {
-                    self.log(.warning, self.logSource, "queue audio frames until task-started: \(self.pendingAudioFrames.count)")
-                }
+            guard let self, !self.isClosing else { return }
+            guard let task = self.task, self.readyToSendAudio else {
+                self.queuePendingAudioFrame(data)
                 return
             }
             self.sentAudioFrameCount += 1
@@ -155,14 +153,25 @@ final class ASRWebSocketClient {
         }
     }
 
+    private func queuePendingAudioFrame(_ data: Data) {
+        pendingAudioFrames.append(data)
+        if pendingAudioFrames.count > 80 {
+            pendingAudioFrames.removeFirst(pendingAudioFrames.count - 80)
+        }
+        if pendingAudioFrames.count == 1 || pendingAudioFrames.count % 20 == 0 {
+            log(.warning, logSource, "queue audio frames until task-started: \(pendingAudioFrames.count)")
+        }
+    }
+
     func close() {
         isClosing = true
-        reportedConnectionFailure = false
+        reportedConnectionFailure = true
         refreshWorkItem?.cancel()
         refreshWorkItem = nil
-        aliyunVocabularyTask?.cancel()
-        aliyunVocabularyTask = nil
-        deleteAliyunVocabularyIfNeeded()
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        aliyunPreparationTask?.cancel()
+        aliyunPreparationTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         taskID = nil
@@ -205,36 +214,81 @@ final class ASRWebSocketClient {
         sendControl(text)
     }
 
-    private func prepareAliyunHotwordsThenRunTask(settings: ASRConnectionSettings, taskID: String, connectionID: UUID) {
+    private func prepareAliyunHotwordsThenOpenConnection(
+        settings: ASRConnectionSettings,
+        taskID: String,
+        connectionID: UUID
+    ) {
         let entries = ASRHotwordFormatter.entries(from: settings.hotwords)
         guard !entries.isEmpty else {
-            sendAliyunRunTask(settings: settings, taskID: taskID, vocabularyID: nil)
+            openAliyunConnection(settings: settings, taskID: taskID, connectionID: connectionID, vocabularyID: nil)
             return
         }
 
         guard Self.modelSupportsAliyunHotwords(settings.aliyunModel) else {
             log(.warning, logSource, "ignore hotwords: Aliyun hotwords require Fun-ASR or Paraformer model")
-            sendAliyunRunTask(settings: settings, taskID: taskID, vocabularyID: nil)
+            openAliyunConnection(settings: settings, taskID: taskID, connectionID: connectionID, vocabularyID: nil)
             return
         }
 
-        log(.info, logSource, "create aliyun hotwords vocabulary: \(entries.count) words, weight=4")
-        aliyunVocabularyTask?.cancel()
-        aliyunVocabularyTask = Task { [weak self] in
+        log(.info, logSource, "prepare shared aliyun hotwords vocabulary: \(entries.count) words, weight=4")
+        let configuration = AliyunHotwordVocabularyConfiguration(settings: settings, entries: entries)
+        aliyunPreparationTask?.cancel()
+        aliyunPreparationTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let vocabularyID = try await self.createAliyunVocabulary(settings: settings, entries: entries)
-                guard connectionID == self.connectionID, self.taskID == taskID, !Task.isCancelled else {
-                    try? await Self.deleteAliyunVocabulary(settings: settings, vocabularyID: vocabularyID)
-                    return
-                }
-                self.aliyunVocabularyID = vocabularyID
+                let vocabularyID = try await self.aliyunHotwordManager.vocabularyID(for: configuration)
+                guard self.isCurrentConnection(connectionID: connectionID, taskID: taskID),
+                      !Task.isCancelled else { return }
                 self.log(.info, self.logSource, "aliyun hotwords vocabulary ready: \(vocabularyID)")
-                self.sendAliyunRunTask(settings: settings, taskID: taskID, vocabularyID: vocabularyID)
+                self.openAliyunConnection(
+                    settings: settings,
+                    taskID: taskID,
+                    connectionID: connectionID,
+                    vocabularyID: vocabularyID
+                )
+            } catch is CancellationError {
+                return
             } catch {
-                self.handleConnectionFailure(error, context: "prepare aliyun hotwords failed", connectionID: connectionID)
+                guard self.isCurrentConnection(connectionID: connectionID, taskID: taskID) else { return }
+                self.log(
+                    .warning,
+                    self.logSource,
+                    "prepare aliyun hotwords failed; continue without hotwords: \(self.errorDetails(error))"
+                )
+                self.openAliyunConnection(
+                    settings: settings,
+                    taskID: taskID,
+                    connectionID: connectionID,
+                    vocabularyID: nil
+                )
             }
         }
+    }
+
+    private func openAliyunConnection(
+        settings: ASRConnectionSettings,
+        taskID: String,
+        connectionID: UUID,
+        vocabularyID: String?
+    ) {
+        guard isCurrentConnection(connectionID: connectionID, taskID: taskID),
+              let url = URL(string: settings.aliyunEndpoint) else { return }
+
+        var request = URLRequest(url: url)
+        request.setValue(
+            "Bearer \(settings.aliyunAPIKey.trimmingCharacters(in: .whitespacesAndNewlines))",
+            forHTTPHeaderField: "Authorization"
+        )
+        let task = URLSession.shared.webSocketTask(with: request)
+        self.task = task
+        task.resume()
+        sendAliyunRunTask(settings: settings, taskID: taskID, vocabularyID: vocabularyID)
+        receiveLoop(connectionID: connectionID)
+    }
+
+    private func isCurrentConnection(connectionID: UUID, taskID: String) -> Bool {
+        !isClosing && connectionID == self.connectionID && taskID == self.taskID
     }
 
     private func sendAliyunRunTask(settings: ASRConnectionSettings, taskID: String, vocabularyID: String?) {
@@ -267,120 +321,6 @@ final class ASRWebSocketClient {
                 "input": [:]
             ]
         ])
-    }
-
-    private func createAliyunVocabulary(settings: ASRConnectionSettings, entries: [ASRHotwordEntry]) async throws -> String {
-        let response = try await Self.sendAliyunVocabularyRequest(
-            settings: settings,
-            input: [
-                "action": "create_vocabulary",
-                "target_model": settings.aliyunModel,
-                "prefix": "msfree",
-                "vocabulary": entries.map(\.aliyunPayload)
-            ]
-        )
-        guard let output = response["output"] as? [String: Any],
-              let vocabularyID = output["vocabulary_id"] as? String,
-              !vocabularyID.isEmpty else {
-            throw ASRClientError.invalidHotwordsResponse
-        }
-
-        try await waitUntilAliyunVocabularyReady(settings: settings, vocabularyID: vocabularyID)
-        return vocabularyID
-    }
-
-    private func waitUntilAliyunVocabularyReady(settings: ASRConnectionSettings, vocabularyID: String) async throws {
-        for attempt in 0..<6 {
-            let response = try await Self.sendAliyunVocabularyRequest(
-                settings: settings,
-                input: [
-                    "action": "query_vocabulary",
-                    "vocabulary_id": vocabularyID
-                ]
-            )
-            guard let output = response["output"] as? [String: Any],
-                  let status = output["status"] as? String else {
-                throw ASRClientError.invalidHotwordsResponse
-            }
-
-            if status == "OK" {
-                return
-            }
-            if attempt == 5 {
-                throw ASRClientError.hotwordsRequestFailed("vocabulary status is \(status)")
-            }
-            try await Task.sleep(nanoseconds: 300_000_000)
-        }
-    }
-
-    private func deleteAliyunVocabularyIfNeeded() {
-        guard let vocabularyID = aliyunVocabularyID else { return }
-        aliyunVocabularyID = nil
-        guard let settings, settings.backend == .aliyunCloud else { return }
-        log(.info, logSource, "delete aliyun hotwords vocabulary: \(vocabularyID)")
-        Task.detached {
-            try? await Self.deleteAliyunVocabulary(settings: settings, vocabularyID: vocabularyID)
-        }
-    }
-
-    private static func deleteAliyunVocabulary(settings: ASRConnectionSettings, vocabularyID: String) async throws {
-        _ = try await sendAliyunVocabularyRequest(
-            settings: settings,
-            input: [
-                "action": "delete_vocabulary",
-                "vocabulary_id": vocabularyID
-            ]
-        )
-    }
-
-    private static func sendAliyunVocabularyRequest(settings: ASRConnectionSettings, input: [String: Any]) async throws -> [String: Any] {
-        guard let url = aliyunHotwordsURL(from: settings.aliyunEndpoint) else {
-            throw ASRClientError.invalidHotwordsEndpoint
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(settings.aliyunAPIKey.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": "speech-biasing",
-            "input": input
-        ])
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let httpResponse = response as? HTTPURLResponse,
-           !(200..<300).contains(httpResponse.statusCode) {
-            let body = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
-            throw ASRClientError.hotwordsRequestFailed(body)
-        }
-
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ASRClientError.invalidHotwordsResponse
-        }
-        if let code = object["code"] as? String, !code.isEmpty {
-            let message = object["message"] as? String ?? code
-            throw ASRClientError.hotwordsRequestFailed(message)
-        }
-        return object
-    }
-
-    private static func aliyunHotwordsURL(from websocketEndpoint: String) -> URL? {
-        var endpoint = websocketEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        if endpoint.hasPrefix("wss://") {
-            endpoint = "https://" + String(endpoint.dropFirst(6))
-        } else if endpoint.hasPrefix("ws://") {
-            endpoint = "http://" + String(endpoint.dropFirst(5))
-        }
-
-        if let range = endpoint.range(of: "/api-ws/v1/inference/") {
-            endpoint.replaceSubrange(range, with: "/api/v1/services/audio/asr/customization")
-        } else if let range = endpoint.range(of: "/api-ws/v1/inference") {
-            endpoint.replaceSubrange(range, with: "/api/v1/services/audio/asr/customization")
-        } else {
-            endpoint = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                + "/api/v1/services/audio/asr/customization"
-        }
-        return URL(string: endpoint)
     }
 
     private static func modelSupportsAliyunHotwords(_ model: String) -> Bool {
@@ -425,6 +365,7 @@ final class ASRWebSocketClient {
                     try self.handle(message)
                     self.receiveLoop(connectionID: connectionID)
                 } catch {
+                    self.log(.error, self.logSource, "handle message failed: \(self.errorDetails(error))")
                     self.onError?(error)
                     self.receiveLoop(connectionID: connectionID)
                 }
@@ -482,6 +423,10 @@ final class ASRWebSocketClient {
 
         switch event {
         case "task-started":
+            reconnectAttempt = 0
+            reportedConnectionFailure = false
+            reconnectWorkItem?.cancel()
+            reconnectWorkItem = nil
             readyToSendAudio = true
             log(.info, logSource, "task-started")
             scheduleAliyunRefreshIfNeeded()
@@ -494,7 +439,11 @@ final class ASRWebSocketClient {
                 log(.warning, logSource, "task failed; reconnecting: \(message)")
                 reconnectAliyun(reason: "task failed")
             } else {
-                handleConnectionFailure(ASRClientErrorMessage(message), context: "task failed")
+                handleConnectionFailure(
+                    ASRClientErrorMessage(message),
+                    context: "task failed",
+                    allowReconnect: false
+                )
             }
         default:
             break
@@ -539,15 +488,19 @@ final class ASRWebSocketClient {
     private func reconnectAliyun(reason: String) {
         guard !isClosing, settings?.backend == .aliyunCloud, let settings else { return }
         log(.warning, logSource, "reconnect aliyun stream: \(reason)")
-        close()
         do {
-            try connect(settings: settings)
+            try replaceConnection(settings: settings)
         } catch {
             handleConnectionFailure(error, context: "reconnect failed")
         }
     }
 
-    private func handleConnectionFailure(_ error: Error, context: String, connectionID: UUID? = nil) {
+    private func handleConnectionFailure(
+        _ error: Error,
+        context: String,
+        connectionID: UUID? = nil,
+        allowReconnect: Bool = true
+    ) {
         if let connectionID, connectionID != self.connectionID {
             return
         }
@@ -556,9 +509,38 @@ final class ASRWebSocketClient {
         refreshWorkItem?.cancel()
         refreshWorkItem = nil
         readyToSendAudio = false
+        let failedTask = task
         task = nil
-        log(.error, logSource, "\(context): \(error.localizedDescription)")
+        failedTask?.cancel(with: .goingAway, reason: nil)
+
+        if allowReconnect,
+           settings?.backend == .aliyunCloud,
+           reconnectAttempt < maxAliyunReconnectAttempts {
+            reconnectAttempt += 1
+            let delay = min(pow(2.0, Double(reconnectAttempt - 1)), 8.0)
+            log(
+                .warning,
+                logSource,
+                "\(context): \(errorDetails(error)); reconnecting in \(Int(delay))s "
+                    + "(attempt \(reconnectAttempt)/\(maxAliyunReconnectAttempts))"
+            )
+            let item = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.reconnectWorkItem = nil
+                self.reconnectAliyun(reason: "transport failure")
+            }
+            reconnectWorkItem = item
+            sendQueue.asyncAfter(deadline: .now() + delay, execute: item)
+            return
+        }
+
+        log(.error, logSource, "\(context): \(errorDetails(error))")
         onError?(error)
+    }
+
+    private func errorDetails(_ error: Error) -> String {
+        let nsError = error as NSError
+        return "\(error.localizedDescription) [\(nsError.domain) \(nsError.code)]"
     }
 
     private func log(_ level: APILogLevel, _ source: String, _ message: String) {

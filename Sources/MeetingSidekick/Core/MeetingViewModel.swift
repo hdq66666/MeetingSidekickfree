@@ -20,6 +20,7 @@ final class MeetingViewModel: ObservableObject {
     private let asrClientRouter = ASRClientRouter()
     private let apiLogOutputGate = APILogOutputGate()
     private let microphoneLevelReporter: AudioLevelReporter
+    private var aliyunHotwordManager = AliyunHotwordVocabularyManager()
     private var asrClients: [ASRStreamRole: ASRWebSocketClient] = [:]
     private var audioCaptures: [AudioCapture] = []
     private var answerTasks: [UUID: Task<Void, Never>] = [:]
@@ -61,6 +62,7 @@ final class MeetingViewModel: ObservableObject {
         let startID = UUID()
         audioStartID = startID
         audioStartTask?.cancel()
+        aliyunHotwordManager = AliyunHotwordVocabularyManager()
 
         do {
             let config = self.config
@@ -113,6 +115,7 @@ final class MeetingViewModel: ObservableObject {
     }
 
     func stop() {
+        let hotwordManager = aliyunHotwordManager
         audioStartTask?.cancel()
         audioStartTask = nil
         audioStartID = UUID()
@@ -132,9 +135,34 @@ final class MeetingViewModel: ObservableObject {
         asrClientRouter.removeAll()
         transcriptAutosaveTask?.cancel()
         transcriptAutosaveTask = nil
+        cleanupAliyunHotwords(using: hotwordManager)
         isRunning = false
         statusText = "Stopped"
         appendLog(.info, source: "APP", message: "stopped")
+    }
+
+    private func cleanupAliyunHotwords(using manager: AliyunHotwordVocabularyManager) {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            for attempt in 1...3 {
+                do {
+                    if try await manager.reset() {
+                        self?.appendLog(.info, source: "ASR", message: "deleted shared aliyun hotwords vocabulary")
+                    }
+                    return
+                } catch {
+                    if attempt == 3 {
+                        self?.appendLog(
+                            .warning,
+                            source: "ASR",
+                            message: "delete aliyun hotwords vocabulary failed after 3 attempts: \(error.localizedDescription)"
+                        )
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+                }
+            }
+        }
     }
 
     private func finishAudioStart(_ captures: [AudioCapture], startID: UUID) {
@@ -407,7 +435,7 @@ final class MeetingViewModel: ObservableObject {
     }
 
     private func makeASRClient(for plan: ASRStreamPlan) throws -> ASRWebSocketClient {
-        let client = ASRWebSocketClient()
+        let client = ASRWebSocketClient(aliyunHotwordManager: aliyunHotwordManager)
         client.onEvent = { [weak self] event in
             Task { @MainActor in
                 self?.handleASREvent(event)
@@ -417,7 +445,6 @@ final class MeetingViewModel: ObservableObject {
             Task { @MainActor in
                 self?.lastError = error.localizedDescription
                 self?.statusText = "ASR error"
-                self?.appendLog(.error, source: "ASR \(plan.streamName)", message: error.localizedDescription)
             }
         }
         client.onLog = { [weak self] level, source, message in
